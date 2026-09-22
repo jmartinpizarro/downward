@@ -5,3 +5,6 @@ __pycache__/
 /builds/
 /misc/.tox/
 /misc/autodoc/downward-xmlrpc.secret
+
+# Git verification
+.git-token
