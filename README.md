@@ -1,7 +1,5 @@
 <img src="misc/images/fast-downward.svg" width="800" alt="Fast Downward">
 
-Just a random commit!
-
 Fast Downward is a domain-independent classical planning system.
 
 Copyright 2003-2026 Fast Downward contributors (see below).
