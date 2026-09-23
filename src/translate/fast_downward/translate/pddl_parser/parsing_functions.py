@@ -1,6 +1,8 @@
 import contextlib
 import sys
 
+from typing import List, Tuple
+
 from fast_downward.translate import graph
 from fast_downward.translate import pddl
 from fast_downward.translate.options import get_options
@@ -647,9 +649,35 @@ def parse_task(domain_pddl, problem_pddl) -> pddl.Task:
 
     init += [pddl.Atom("=", (obj.name, obj.name)) for obj in objects]
 
-    return pddl.Task(
-        domain_name, problem_name, requirements, types, objects,
-        predicates, functions, init, goal, actions, axioms, use_metric)
+    # if lifted atoms, it is needed to change the task definition
+    # otherwise you can pass the task without modifying it
+    lifted, lifted_atoms = check_for_lifted(init)
+    if not lifted:
+        return pddl.Task(
+            domain_name, problem_name, requirements, types, objects,
+            predicates, functions, init, goal, actions, axioms, use_metric)
+
+    # the task is lifted - compilation must be changed according to Gragera et al. (2026) definition
+    # it is necessary to add the o_var o_type o_obj - obj types (and their corresponding assignations wrt the
+    # the original task), the constants related with the original task and the new actions (free, assign...) with 
+    # null cost
+    # TODO - refactor into function
+    with context.layer("Generating lifted task"):
+        # update types
+        lifted_types = types.copy()
+        for k in ["o_var", "o_type", "o_obj"]:
+            lifted_types.append(pddl.Type(k, "object"))
+        print(lifted_types)
+        # update constants (aka known as objects)
+        # add every object that is not lifted as objects (constants)
+        lifted_objects = [x for x in objects if x not in lifted_atoms]
+        print(lifted_objects)
+
+        
+        # TODO - change return values when computed
+        return pddl.Task(
+            domain_name, problem_name, requirements, types, objects,
+            predicates, functions, init, goal, actions, axioms, use_metric)
 
 
 def parse_domain_pddl(context, domain_pddl):
@@ -882,3 +910,19 @@ def check_for_duplicates(context, elements, element_type):
             print_warning(msg)
         else:
             context.error(msg)
+
+def check_for_lifted(elements: List[pddl.Atom]) -> Tuple[bool, List[pddl.Atom]]:
+    """
+    Checks if, for every Atom in the possible task, there is one lifted
+
+    @param elements: List[Atom]
+    @returns bool
+    """
+    lifted = []
+    for element in elements:
+        if isinstance(element, pddl.Atom):
+            args = element.args
+            for arg in args:
+                if arg.startswith('?'):
+                    lifted.append(element)
+    return (True if len(lifted) >= 1 else False, lifted)
