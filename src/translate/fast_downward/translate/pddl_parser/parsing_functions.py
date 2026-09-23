@@ -619,14 +619,16 @@ def parse_init(context, alist, predicate_dict, term_names):
     return initial
 
 
-def parse_task(domain_pddl, problem_pddl):
+def parse_task(domain_pddl, problem_pddl) -> pddl.Task:
     context = Context()
     if not isinstance(domain_pddl, list):
         context.error("Invalid definition of a PDDL domain.")
+    # Parse the domain, obtain all relevant information from the file
     domain_name, domain_requirements, types, type_dict, constants, predicates, \
         predicate_dict, functions, actions, axioms = parse_domain_pddl(context, domain_pddl)
     if not isinstance(problem_pddl, list):
         context.error("Invalid definition of a PDDL problem.")
+    # Parse the problem, obtain objects, init and goal states
     problem_name, problem_domain_name, problem_requirements, objects, init, goal, \
         use_metric = parse_problem_pddl(context, problem_pddl, type_dict,
                                         predicate_dict, {c.name for c in constants})
@@ -841,9 +843,30 @@ def check_predicate_and_terms_existence(
         context.error("Undefined predicate", predicate_name)
     for term in terms:
         if term not in valid_term_names:
-            item = "variable" if term.startswith("?") else "object"
+            # check if it is a valid lifted variable
+            if term.startswith("?"):
+                is_lifted = check_lifted(term, valid_term_names)
+                if not is_lifted:
+                    item = "variable"
+                else:
+                    return
+            else:
+                item = "object"
             context.error(f"Undefined {item}", term)
 
+def check_lifted(term: str, valid_term_names: set) -> bool:
+    """
+    Checks if the term is lifted. If the term starts with '?' and exists
+    as an already defined variable, it is lifted
+
+    @param term: str
+    @param valid_term_names: set<possibly str>
+
+    @return bool -> True if lifted, else False
+    """
+    if not term[1:] in valid_term_names:
+        return False
+    return True
 
 def check_for_duplicates(context, elements, element_type):
     seen = set()

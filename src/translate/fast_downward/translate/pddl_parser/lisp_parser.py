@@ -1,9 +1,11 @@
 __all__ = ["parse_nested_list"]
 
+from typing import List
+
 from fast_downward.translate.pddl_parser.parse_error import ParseError
 
 # Basic functions for parsing PDDL (Lisp) files.
-def parse_nested_list(input_file):
+def parse_nested_list(input_file) -> List[str]:
     tokens = tokenize(input_file)
     next_token = next(tokens)
     if next_token != "(":
