@@ -667,12 +667,13 @@ def parse_task(domain_pddl, problem_pddl) -> pddl.Task:
         lifted_types = types.copy()
         for k in ["o_var", "o_type", "o_obj"]:
             lifted_types.append(pddl.Type(k, "object"))
-        print(lifted_types)
+        # print(lifted_types)
         # update constants (aka known as objects)
         # add every object that is not lifted as objects (constants)
-        lifted_objects = [x for x in objects if x not in lifted_atoms]
-        print(lifted_objects)
+        constants_objects = [x for x in objects if x not in lifted_atoms]
 
+        # TODO location locatable - o obj ... to types
+        # TODO add t vehicle t location t truck - o type placeA vehicle1 placeB ... - o var to constants
         
         # TODO - change return values when computed
         return pddl.Task(
