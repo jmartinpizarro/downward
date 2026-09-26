@@ -2,6 +2,7 @@
 
 
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 VarValPair = Tuple[int, int]
@@ -609,6 +610,277 @@ def pddl_to_sas(task):
     return sas_task
 
 
+def _pddl_type_list(items):
+    grouped = defaultdict(list)
+    for item in items:
+        grouped[item.type_name].append(item.name)
+    return " ".join(
+        "{} - {}".format(" ".join(names), type_name)
+        for type_name, names in grouped.items())
+
+
+def _pddl_literal(literal):
+    text = "({} {})".format(literal.predicate, " ".join(literal.args))
+    return "(not {})".format(text) if literal.negated else text
+
+
+def _pddl_condition(condition):
+    if isinstance(condition, pddl.Truth):
+        return "(and)"
+    if isinstance(condition, pddl.Falsity):
+        return "(not (and))"
+    if isinstance(condition, pddl.Literal):
+        return _pddl_literal(condition)
+    if isinstance(condition, pddl.Conjunction):
+        return "(and {})".format(" ".join(
+            _pddl_condition(part) for part in condition.parts))
+    if isinstance(condition, pddl.Disjunction):
+        return "(or {})".format(" ".join(
+            _pddl_condition(part) for part in condition.parts))
+    raise TypeError("Unsupported PDDL condition: {}".format(type(condition)) )
+
+
+def _pddl_expression(expression):
+    if isinstance(expression, pddl.NumericConstant):
+        return str(expression.value)
+    if isinstance(expression, pddl.PrimitiveNumericExpression):
+        return "({} {})".format(expression.symbol, " ".join(expression.args))
+    raise TypeError("Unsupported PDDL expression: {}".format(type(expression)))
+
+
+def _pddl_effects(action):
+    effects = [_pddl_literal(effect.literal) for effect in action.effects]
+    if action.cost is not None:
+        effects.append("(increase (total-cost) {})".format(
+            _pddl_expression(action.cost.expression)))
+    return "(and {})".format(" ".join(effects))
+
+
+def _write_lifted_pddl(task, domain_path, problem_path):
+    "Writes a lifted PDDL representation of the task to the given files."
+    domain_lines = [
+        "(define (domain {})".format(task.domain_name),
+        " (:requirements {})".format(" ".join(task.requirements.requirements)),
+        " (:types {} )".format(_pddl_type_list([
+            pddl.TypedObject(type_.name, type_.basetype_name or "object")
+            for type_ in task.types if type_.name != "object"])),
+        " (:constants {})".format(_pddl_type_list(
+            getattr(task, "domain_constants", []))),
+        " (:predicates"]
+    for predicate in task.predicates:
+        if predicate.name == "=":
+            continue
+        domain_lines.append("  ({} {})".format(
+            predicate.name, _pddl_type_list(predicate.arguments)))
+    domain_lines.append(" )")
+    if task.functions:
+        domain_lines.append(" (:functions")
+        for function in task.functions:
+            domain_lines.append("  ({} {}) - {}".format(
+                function.name, _pddl_type_list(function.arguments),
+                function.type_name))
+        domain_lines.append(" )")
+    for action in task.actions:
+        domain_lines.extend([
+            " (:action {}".format(action.name),
+            "  :parameters ({})".format(_pddl_type_list(action.parameters)),
+            "  :precondition {}".format(_pddl_condition(action.precondition)),
+            "  :effect {}".format(_pddl_effects(action)),
+            " )"])
+    domain_lines.append(")")
+
+    problem_lines = [
+        "(define (problem {})".format(task.problem_name),
+        " (:domain {})".format(task.domain_name),
+        " (:objects {})".format(_pddl_type_list(
+            getattr(task, "problem_objects", task.objects))),
+        " (:init"]
+    for item in task.init:
+        if isinstance(item, pddl.Atom):
+            if item.predicate == "=" and item.args[0] == item.args[1]:
+                continue
+            problem_lines.append("  {}".format(_pddl_literal(item)))
+        else:
+            problem_lines.append("  (= ({}) {})".format(
+                " ".join([item.fluent.symbol] + list(item.fluent.args)),
+                _pddl_expression(item.expression)))
+    problem_lines.extend([
+        " )",
+        " (:goal {})".format(_pddl_condition(task.goal))])
+    if task.use_min_cost_metric:
+        problem_lines.append(" (:metric minimize (total-cost))")
+    problem_lines.append(")")
+
+    Path(domain_path).write_text("\n".join(domain_lines) + "\n")
+    Path(problem_path).write_text("\n".join(problem_lines) + "\n")
+
+
+def pddl_to_lifted(task: pddl.Task) -> None:
+    """Compile a lifted initial state and write the two resulting PDDL files."""
+    lifted_atoms = [
+        atom for atom in task.init
+        if isinstance(atom, pddl.Atom) and any(
+            argument.startswith("?") for argument in atom.args)]
+    if not lifted_atoms: # this should never happen but just in case
+        return
+
+    predicate_by_name = {predicate.name: predicate
+                         for predicate in task.predicates}
+    variable_types = {}
+    # check for inconsistent types of lifted variables
+    for atom in lifted_atoms:
+        predicate = predicate_by_name[atom.predicate]
+        for argument, parameter in zip(atom.args, predicate.arguments):
+            if argument.startswith("?"):
+                previous_type = variable_types.setdefault(
+                    argument, parameter.type_name)
+                if previous_type != parameter.type_name:
+                    raise ValueError(
+                        f"Lifted variable {argument} has inconsistent types")
+
+    original_type_names = {
+        type_.name for type_ in task.types
+        if type_.name not in {"o_var", "o_type", "o_obj"}}
+    compiled_types = [pddl.Type("object")]
+    compiled_types.extend([
+        pddl.Type("o_var", "object"),
+        pddl.Type("o_type", "object"),
+        pddl.Type("o_obj", "object")])
+    compiled_type_names = {type_.name for type_ in compiled_types}
+    for type_ in task.types:
+        if type_.name in compiled_type_names:
+            continue
+        base_type = type_.basetype_name
+        if base_type is None or base_type == "object":
+            base_type = "o_obj"
+        compiled_types.append(pddl.Type(type_.name, base_type))
+        compiled_type_names.add(type_.name)
+
+    variable_constants = [
+        pddl.TypedObject(name[1:], "o_var")
+        for name in sorted(variable_types)]
+    type_constants = [
+        pddl.TypedObject(f"t_{name}", "o_type")
+        for name in sorted(original_type_names)]
+    compiled_objects = list(task.objects) + variable_constants + type_constants
+    variable_constant_by_name = {
+        name: name[1:] for name in variable_types}
+    type_constant_by_name = {
+        name: f"t_{name}" for name in original_type_names}
+
+    compiled_predicates = list(task.predicates)
+
+    def predicate(name, *types):
+        return pddl.Predicate(
+            name, [pddl.TypedObject(f"?arg{index}", type_name)
+                   for index, type_name in enumerate(types)])
+
+    compiled_predicates.extend([
+        predicate("obj_type", "o_obj", "o_type"),
+        predicate("var_type", "o_var", "o_type"),
+        predicate("free", "o_var"),
+        predicate("assignment", "o_var", "o_obj")])
+
+    def conjunction(parts):
+        return pddl.Conjunction(parts) if parts else pddl.Truth()
+
+    def effect(literal):
+        return pddl.Effect([], pddl.Truth(), literal)
+
+    auxiliary_actions = []
+    assign_parameters = [
+        pddl.TypedObject("?v", "o_var"),
+        pddl.TypedObject("?t", "o_type"),
+        pddl.TypedObject("?o", "o_obj")]
+    auxiliary_actions.append(pddl.Action(
+        "assign", assign_parameters, len(assign_parameters),
+        conjunction([
+            pddl.Atom("free", ["?v"]),
+            pddl.Atom("var_type", ["?v", "?t"]),
+            pddl.Atom("obj_type", ["?o", "?t"])]),
+        [effect(pddl.Atom("assignment", ["?v", "?o"])),
+         effect(pddl.NegatedAtom("free", ["?v"]))],
+        None))
+
+    variable_groups = []
+    seen_groups = set()
+    for atom in lifted_atoms:
+        group = tuple(sorted({argument for argument in atom.args
+                              if argument.startswith("?")}))
+        if group not in seen_groups:
+            seen_groups.add(group)
+            variable_groups.append(group)
+
+    for group in variable_groups:
+        arity = len(group)
+        applied_name = f"applied{arity}"
+        compiled_predicates.append(
+            predicate(applied_name, *(["o_var"] * arity)))
+        parameters = [pddl.TypedObject(f"?obj{index}", "o_obj")
+                      for index in range(arity)]
+        replacements = dict(zip(group, [parameter.name for parameter in parameters]))
+        group_atoms = [atom for atom in lifted_atoms
+                       if tuple(sorted({argument for argument in atom.args
+                                         if argument.startswith("?")})) == group]
+        preconditions = [
+            pddl.Atom("assignment", [variable_constant_by_name[variable],
+                                     parameter.name])
+            for variable, parameter in zip(group, parameters)]
+        preconditions.append(pddl.NegatedAtom(
+            applied_name,
+            [variable_constant_by_name[variable] for variable in group]))
+        effects = []
+        for atom in group_atoms:
+            effects.append(effect(pddl.Atom(
+                atom.predicate,
+                [replacements.get(argument, argument)
+                 for argument in atom.args])))
+        effects.append(effect(pddl.Atom(
+            applied_name,
+            [variable_constant_by_name[variable] for variable in group])))
+        auxiliary_actions.append(pddl.Action(
+            f"apply-assignment-{arity}-{'-'.join(
+                variable_constant_by_name[variable] for variable in group)}",
+            parameters, len(parameters), conjunction(preconditions), effects,
+            None))
+
+    compiled_init = [
+        item for item in task.init
+        if not isinstance(item, pddl.Atom) or item not in lifted_atoms]
+    for variable, type_name in sorted(variable_types.items()):
+        variable_constant = variable_constant_by_name[variable]
+        type_constant = type_constant_by_name[type_name]
+        compiled_init.extend([
+            pddl.Atom("var_type", [variable_constant, type_constant]),
+            pddl.Atom("free", [variable_constant])])
+        for obj in task.objects:
+            current_type = obj.type_name
+            while current_type is not None:
+                if current_type == type_name:
+                    compiled_init.append(pddl.Atom(
+                        "obj_type", [obj.name, type_constant]))
+                    break
+                parent = next((candidate.basetype_name
+                               for candidate in task.types
+                               if candidate.name == current_type), None)
+                current_type = parent
+
+    compiled_task = pddl.Task(
+        task.domain_name, task.problem_name, False, task.requirements,
+        compiled_types, compiled_objects, compiled_predicates,
+        task.functions, compiled_init, task.goal,
+        list(task.actions) + auxiliary_actions, list(task.axioms),
+        task.use_min_cost_metric)
+    compiled_task.domain_constants = variable_constants + type_constants
+    compiled_task.problem_objects = list(task.objects)
+    domain_path = Path(get_options().domain)
+    problem_path = Path(get_options().problem)
+    _write_lifted_pddl(
+        compiled_task,
+        domain_path.with_name("lifted_" + domain_path.name),
+        problem_path.with_name("lifted_" + problem_path.name))
+
+
 def build_mutex_key(strips_to_sas, groups):
     assert get_options().use_partial_encoding
     group_keys = []
@@ -704,11 +976,14 @@ def main():
             for index, effect in reversed(list(enumerate(action.effects))):
                 if effect.literal.negated:
                     del action.effects[index]
+    if not task.is_lifted:
+        sas_task = pddl_to_sas(task)
+        dump_statistics(sas_task)
 
-    sas_task = pddl_to_sas(task)
-    dump_statistics(sas_task)
-
-    with timers.timing("Writing output"):
-        with open(get_options().sas_file, "w") as output_file:
-            sas_task.output(output_file)
+        with timers.timing("Writing output"):
+            with open(get_options().sas_file, "w") as output_file:
+                sas_task.output(output_file)
+    else:
+        with timers.timing("Writing output"):
+            pddl_to_lifted(task)
     print("Done! %s" % timer)

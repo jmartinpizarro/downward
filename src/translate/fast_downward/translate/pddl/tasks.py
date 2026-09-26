@@ -12,6 +12,7 @@ from fast_downward.translate.pddl.predicates import Predicate
 
 class Task:
     def __init__(self, domain_name: str, problem_name: str,
+                 is_lifted: bool,
                  requirements: "Requirements",
                  types: List[Type], objects: List[TypedObject], predicates:
                  List[Predicate], functions: List[Function],
@@ -20,6 +21,7 @@ class Task:
                  use_metric: bool) -> None:
         self.domain_name = domain_name
         self.problem_name = problem_name
+        self.is_lifted = is_lifted
         self.requirements = requirements
         self.types = types
         self.objects = objects

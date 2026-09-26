@@ -654,7 +654,7 @@ def parse_task(domain_pddl, problem_pddl) -> pddl.Task:
     lifted, lifted_atoms = check_for_lifted(init)
     if not lifted:
         return pddl.Task(
-            domain_name, problem_name, requirements, types, objects,
+            domain_name, problem_name, lifted, requirements, types, objects,
             predicates, functions, init, goal, actions, axioms, use_metric)
 
     # the task is lifted - compilation must be changed according to Gragera et al. (2026) definition
@@ -669,15 +669,19 @@ def parse_task(domain_pddl, problem_pddl) -> pddl.Task:
             lifted_types.append(pddl.Type(k, "object"))
         # print(lifted_types)
         # update constants (aka known as objects)
-        # add every object that is not lifted as objects (constants)
-        constants_objects = [x for x in objects if x not in lifted_atoms]
-
-        # TODO location locatable - o obj ... to types
-        # TODO add t vehicle t location t truck - o type placeA vehicle1 placeB ... - o var to constants
+        # add every object that is not used as a lifted variable
+        lifted_object_names = {
+            arg[1:]
+            for atom in lifted_atoms
+            for arg in atom.args
+            if arg.startswith("?")
+        }
+        constants_objects = [
+            obj for obj in objects if obj.name not in lifted_object_names
+        ]
         
-        # TODO - change return values when computed
         return pddl.Task(
-            domain_name, problem_name, requirements, types, objects,
+            domain_name, problem_name, lifted, requirements, lifted_types, constants_objects,
             predicates, functions, init, goal, actions, axioms, use_metric)
 
 
