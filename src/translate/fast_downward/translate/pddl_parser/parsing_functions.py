@@ -606,7 +606,8 @@ def parse_init(context, alist, predicate_dict, term_names):
                         context.error("Invalid negated fact.", syntax=SYNTAX_LITERAL_NEGATED)
                 check_predicate_and_terms_existence(
                     context, fact[0], fact[1:],
-                    predicate_dict.keys(), term_names)
+                    predicate_dict.keys(), term_names,
+                    allow_new_lifted=True)
                 expected_predicate_arity = len(predicate_dict[fact[0]].arguments)
                 predicate_arity = len(fact[1:])
                 if expected_predicate_arity != predicate_arity:
@@ -869,7 +870,8 @@ def check_atom_consistency(context, atom, initial_proposition_values,
 
 
 def check_predicate_and_terms_existence(
-        context, predicate_name, terms, valid_predicate_names, valid_term_names):
+    context, predicate_name, terms, valid_predicate_names, valid_term_names,
+    allow_new_lifted=False):
     assert isinstance(valid_predicate_names, type({}.keys()))
     assert isinstance(valid_term_names, set)
     if predicate_name not in valid_predicate_names:
@@ -878,6 +880,12 @@ def check_predicate_and_terms_existence(
         if term not in valid_term_names:
             # check if it is a valid lifted variable
             if term.startswith("?"):
+                if allow_new_lifted:
+                    if term[1:] in valid_term_names:
+                        context.error(
+                            f"Lifted variable '{term}' conflicts with existing object "
+                            f"'{term[1:]}'.")
+                    continue
                 is_lifted = check_lifted(term, valid_term_names)
                 if not is_lifted:
                     item = "variable"
@@ -889,17 +897,15 @@ def check_predicate_and_terms_existence(
 
 def check_lifted(term: str, valid_term_names: set) -> bool:
     """
-    Checks if the term is lifted. If the term starts with '?' and exists
-    as an already defined variable, it is lifted
+    Checks whether a term is a previously declared variable. Lifted variables
+    in the initial state are handled separately because they may be new names.
 
     @param term: str
     @param valid_term_names: set<possibly str>
 
     @return bool -> True if lifted, else False
     """
-    if not term[1:] in valid_term_names:
-        return False
-    return True
+    return term.startswith("?") and term[1:] in valid_term_names
 
 def check_for_duplicates(context, elements, element_type):
     seen = set()
